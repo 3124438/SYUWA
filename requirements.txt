@@ -2,7 +2,6 @@ streamlit
 streamlit-webrtc
 opencv-python-headless
 tensorflow
-numpy
-av
-protobuf
 mediapipe
+av
+numpy<2.0.0
