@@ -1,7 +1,6 @@
 streamlit
 streamlit-webrtc
-tensorflow-cpu==2.15.0
-mediapipe==0.10.9
-protobuf==3.20.3
+tensorflow-cpu==2.16.1
+mediapipe==0.10.14
 av
-numpy<1.26.0
+numpy<2.0.0
