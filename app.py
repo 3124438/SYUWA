@@ -16,7 +16,7 @@ MODEL_FILE_NAME = "best_sign_model.keras"
 
 # ★ここに学習させた手話のラベルを順番に書く
 # （例: ["こんにちは", "ありがとう", "すき"]）
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3"] 
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "動け!!"] 
 
 # =================================================
 
