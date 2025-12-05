@@ -13,10 +13,10 @@ import av
 # ⚙️ 設定エリア
 # =================================================
 MODEL_FILE_NAME = "best_sign_model.keras"
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3","動け！！！"] # ★あなたのクラス名に合わせてね！
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3","動け！！！"] # あなたのラベルに書き換えて！
 
 # =================================================
-# Attention層 (変更なし)
+# Attention層
 # =================================================
 @tf.keras.utils.register_keras_serializable()
 class Attention(Layer):
@@ -53,10 +53,12 @@ except Exception as e:
     st.error(f"エラー: {e}")
     model = None
 
+# MediaPipe設定
 mp_holistic = mp.solutions.holistic
+mp_drawing = mp.solutions.drawing_utils # ★描画用ツール
 
 # ------------------------------------------------
-# 映像処理クラス
+# 映像処理クラス（デバッグフル装備）
 # ------------------------------------------------
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
@@ -65,7 +67,8 @@ class VideoProcessor(VideoTransformerBase):
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        self.prediction_text = "Waiting..."
+        self.debug_text = "Initializing..."
+        self.prob_text = ""
 
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -75,54 +78,53 @@ class VideoProcessor(VideoTransformerBase):
         results = self.holistic.process(img_rgb)
         img.flags.writeable = True
 
+        # ★ 1. 骨格を画面に描画（これで見えてるか確認！）
+        mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
+        mp_drawing.draw_landmarks(img, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+        mp_drawing.draw_landmarks(img, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+
+        # 検出フラグ
+        has_pose = results.pose_landmarks is not None
+        has_lh = results.left_hand_landmarks is not None
+        has_rh = results.right_hand_landmarks is not None
+
         if model is not None:
-            # ---------------------------------------------------------
-            # ★ここが劇的変化！学習コードと同じ「計算（正規化）」をします
-            # ---------------------------------------------------------
-            
-            # 1. 生データを取得（なければゼロ埋め）
-            if results.pose_landmarks:
+            # --- 学習コードと同じ正規化処理 ---
+            if has_pose:
                 pose = np.array([[res.x, res.y, res.z] for res in results.pose_landmarks.landmark])
             else:
                 pose = np.zeros((33, 3))
 
-            if results.left_hand_landmarks:
+            if has_lh:
                 lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark])
             else:
                 lh = np.zeros((21, 3))
             
-            if results.right_hand_landmarks:
+            if has_rh:
                 rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark])
             else:
                 rh = np.zeros((21, 3))
 
-            # 2. 相対座標へ変換（process_landmarks_relative のロジック）
-            # ポーズデータがある場合のみ計算可能
+            # 相対座標・正規化計算
             if np.sum(pose) != 0:
-                # 肩（11番と12番）の中点を計算
                 left_shoulder = pose[11]
                 right_shoulder = pose[12]
                 center = (left_shoulder + right_shoulder) / 2.0
-                
-                # 肩幅を計算（これを基準の「1」とする）
                 shoulder_width = np.linalg.norm(left_shoulder - right_shoulder)
-                if shoulder_width < 0.01: shoulder_width = 1.0 # ゼロ除算防止
+                if shoulder_width < 0.01: shoulder_width = 1.0
             else:
                 center = np.zeros(3)
                 shoulder_width = 1.0
 
-            # 3. 正規化（中心を引いて、肩幅で割る）
             pose_norm = (pose - center) / shoulder_width
             lh_norm = (lh - center) / shoulder_width
             rh_norm = (rh - center) / shoulder_width
 
-            # 4. 一列に並べる (33*3 + 21*3 + 21*3 = 225次元)
+            # 結合
             keypoints = np.concatenate([pose_norm.flatten(), lh_norm.flatten(), rh_norm.flatten()])
-            
-            # キューに追加
             self.sequence.append(keypoints)
 
-            # 5. 予測実行 (30フレーム溜まったら)
+            # --- 予測 ---
             if len(self.sequence) == 30:
                 input_data = np.expand_dims(list(self.sequence), axis=0)
                 try:
@@ -130,27 +132,34 @@ class VideoProcessor(VideoTransformerBase):
                     predicted_index = np.argmax(prediction)
                     confidence = prediction[0][predicted_index]
 
-                    # 判定
+                    # ★ 閾値なしで生の数字を表示
                     label = CLASS_NAMES[predicted_index] if predicted_index < len(CLASS_NAMES) else str(predicted_index)
-                    
-                    if confidence > 0.8: # 自信があるときだけ更新
-                        self.prediction_text = f"{label} ({confidence*100:.1f}%)"
+                    self.debug_text = f"Result: {label}"
+                    self.prob_text = f"Conf: {confidence*100:.1f}%"
                     
                 except Exception as e:
+                    self.debug_text = "Error"
                     pass
 
-        # 描画
-        cv2.rectangle(img, (0,0), (640, 40), (245, 117, 16), -1)
-        cv2.putText(img, self.prediction_text, (10,30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        # ★ デバッグ情報の描画
+        # センサー状況 P=Pose, L=Left, R=Right
+        status = f"P[{'O' if has_pose else 'X'}] L[{'O' if has_lh else 'X'}] R[{'O' if has_rh else 'X'}]"
+        
+        # 黒い帯を引いて見やすくする
+        cv2.rectangle(img, (0,0), (640, 90), (0, 0, 0), -1) 
+        
+        # 文字を書く
+        cv2.putText(img, self.debug_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(img, self.prob_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(img, status, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
         return img
 
-st.title("🤟 手話認識アプリ（正規化対応版）")
-st.write(f"Model: {MODEL_FILE_NAME}")
+st.title("🔍 完全デバッグモード")
+st.write("体に緑の線が出ているか、P[O]になっているか確認してください")
 
 webrtc_streamer(
-    key="sign-language-norm",
+    key="sign-language-debug-final",
     video_processor_factory=VideoProcessor,
     rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     media_stream_constraints={"video": True, "audio": False},
