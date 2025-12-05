@@ -7,33 +7,41 @@ from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from collections import deque
 import av
 
-# ------------------------------------------------
-# 1. 設定・モデル読み込み
-# ------------------------------------------------
-# ★重要★ ラベルを学習させた順番・内容に合わせて書き換えてください
-LABELS = ['Label 1', 'Label 2', 'Label 3'] 
+# =================================================
+# ⚙️ 設定エリア (ここを変更するだけでOK！)
+# =================================================
+
+# ★ここにモデルのファイル名を書く（.h5 でも .keras でもOK）
+MODEL_FILE_NAME = "best_sign_model.keras"
+
+# ★ここに学習させた手話のラベルを順番に書く
+# （例: ["こんにちは", "ありがとう", "すき"]）
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3"] 
+
+# =================================================
 
 @st.cache_resource
 def load_model():
-    # モデルのパスを指定
-    return tf.keras.models.load_model('sign_language_model.h5')
+    # 設定エリアで指定したファイル名を読み込みます
+    return tf.keras.models.load_model(MODEL_FILE_NAME)
 
+# モデル読み込み処理
 try:
     model = load_model()
-    st.success("モデル読み込み成功！")
+    st.success(f"モデル読み込み成功！: {MODEL_FILE_NAME}")
 except Exception as e:
     st.error(f"モデル読み込みエラー: {e}")
+    st.error("※ファイル名が正しいか、GitHubにアップロードされているか確認してください。")
     model = None
 
 # MediaPipe設定
 mp_holistic = mp.solutions.holistic
 
 # ------------------------------------------------
-# 2. 映像処理クラス
+# 映像処理クラス
 # ------------------------------------------------
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
-        # 30フレーム分のデータを貯める箱
         self.sequence = deque(maxlen=30)
         self.holistic = mp_holistic.Holistic(
             min_detection_confidence=0.5,
@@ -42,23 +50,16 @@ class VideoProcessor(VideoTransformerBase):
         self.prediction_text = "Waiting..."
 
     def transform(self, frame):
-        # WebRTCから画像を取得
         img = frame.to_ndarray(format="bgr24")
 
-        # 1. 骨格抽出 (MediaPipe)
+        # 1. 骨格抽出
         img.flags.writeable = False
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.holistic.process(img_rgb)
         img.flags.writeable = True
 
-        # 2. 骨格を画面に描画（確認用：重ければコメントアウトしてください）
-        # mp.solutions.drawing_utils.draw_landmarks(img, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-        # mp.solutions.drawing_utils.draw_landmarks(img, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-
-        # 3. 座標データ変換
+        # 2. 座標データ変換
         if model is not None:
-            # 左手・右手の検出
-            # ★注意★ 学習時のデータ処理と全く同じにする必要があります
             if results.left_hand_landmarks:
                 lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark]).flatten()
             else:
@@ -69,31 +70,26 @@ class VideoProcessor(VideoTransformerBase):
             else:
                 rh = np.zeros(21*3)
 
-            # データ結合してキューに追加 (左手+右手 = 126次元)
             keypoints = np.concatenate([lh, rh])
             self.sequence.append(keypoints)
 
-            # 4. 30フレーム溜まったら予測を実行
+            # 3. 予測実行
             if len(self.sequence) == 30:
-                # リアルタイム性を保つため、データを整える
                 input_data = np.expand_dims(list(self.sequence), axis=0)
-                
                 try:
                     prediction = model.predict(input_data, verbose=0)
                     predicted_index = np.argmax(prediction)
                     confidence = prediction[0][predicted_index]
 
-                    # 信頼度が70%以上のときだけ表示更新
                     if confidence > 0.7:
-                        # 範囲外エラーを防ぐ
-                        if predicted_index < len(LABELS):
-                            self.prediction_text = f"{LABELS[predicted_index]} ({confidence*100:.1f}%)"
+                        if predicted_index < len(CLASS_NAMES):
+                            self.prediction_text = f"{CLASS_NAMES[predicted_index]} ({confidence*100:.1f}%)"
                         else:
                             self.prediction_text = f"Class {predicted_index}"
                 except Exception as e:
-                    print(f"Prediction Error: {e}")
+                    pass
 
-        # 5. 結果を画面に書き込む
+        # 4. 描画
         cv2.rectangle(img, (0,0), (640, 40), (245, 117, 16), -1)
         cv2.putText(img, self.prediction_text, (10,30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
@@ -101,12 +97,11 @@ class VideoProcessor(VideoTransformerBase):
         return img
 
 # ------------------------------------------------
-# 3. アプリ画面構成
+# アプリ画面構成
 # ------------------------------------------------
-st.title("🤟 リアルタイム手話判定")
-st.write("カメラを許可して、手を動かしてください（30フレーム蓄積後に判定します）")
+st.title("🤟 手話リアルタイム認識")
+st.write(f"読み込みモデル: {MODEL_FILE_NAME}")
 
-# WebRTCの起動設定
 webrtc_streamer(
     key="sign-language",
     video_processor_factory=VideoProcessor,
