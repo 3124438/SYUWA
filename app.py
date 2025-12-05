@@ -3,27 +3,52 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
+from tensorflow.keras.layers import Layer # ★追加
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from collections import deque
 import av
 
 # =================================================
-# ⚙️ 設定エリア (ここを変更するだけでOK！)
+# ⚙️ 設定エリア
 # =================================================
-
-# ★ここにモデルのファイル名を書く（.h5 でも .keras でもOK）
 MODEL_FILE_NAME = "best_sign_model.keras"
-
-# ★ここに学習させた手話のラベルを順番に書く
-# （例: ["こんにちは", "ありがとう", "すき"]）
 CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "動け!!"] 
+
+# =================================================
+# ★ここに「Attention」の設計図を追加しました！
+# =================================================
+@tf.keras.utils.register_keras_serializable()
+class Attention(Layer):
+    def __init__(self, **kwargs):
+        super(Attention, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name='attention_weight', 
+                                 shape=(input_shape[-1], 1), 
+                                 initializer='normal', 
+                                 trainable=True)
+        self.b = self.add_weight(name='attention_bias', 
+                                 shape=(input_shape[1], 1), 
+                                 initializer='zeros', 
+                                 trainable=True)
+        super(Attention, self).build(input_shape)
+
+    def call(self, x):
+        e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
+        a = tf.keras.backend.softmax(e, axis=1)
+        output = x * a
+        return tf.keras.backend.sum(output, axis=1)
+
+    def get_config(self):
+        config = super(Attention, self).get_config()
+        return config
 
 # =================================================
 
 @st.cache_resource
 def load_model():
-    # 設定エリアで指定したファイル名を読み込みます
-    return tf.keras.models.load_model(MODEL_FILE_NAME)
+    # ★ここも修正！「Attentionを使ってね」と教えています
+    return tf.keras.models.load_model(MODEL_FILE_NAME, custom_objects={'Attention': Attention})
 
 # モデル読み込み処理
 try:
@@ -31,7 +56,7 @@ try:
     st.success(f"モデル読み込み成功！: {MODEL_FILE_NAME}")
 except Exception as e:
     st.error(f"モデル読み込みエラー: {e}")
-    st.error("※ファイル名が正しいか、GitHubにアップロードされているか確認してください。")
+    st.error("※学習コードのAttentionと形が違う可能性があります。その場合は学習コードを見せてください！")
     model = None
 
 # MediaPipe設定
