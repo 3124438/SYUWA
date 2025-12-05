@@ -13,7 +13,7 @@ import av
 # ⚙️ 設定エリア
 # =================================================
 MODEL_FILE_NAME = "best_sign_model.keras"
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3","動け！！！"] # あなたのラベルに書き換えて！
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3","Label 4"] # あなたのラベルに書き換えて！
 
 # =================================================
 # Attention層
