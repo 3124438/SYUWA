@@ -3,7 +3,8 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import tensorflow as tf
-from tensorflow.keras.layers import Layer # ★追加
+from tensorflow.keras.layers import Layer
+import tensorflow.keras.backend as K # ★追加：学習コードに合わせて追加
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from collections import deque
 import av
@@ -12,10 +13,12 @@ import av
 # ⚙️ 設定エリア
 # =================================================
 MODEL_FILE_NAME = "best_sign_model.keras"
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "動け!!"] 
+
+# ★あなたのクラス名に合わせて書き換えてください
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "動け！！"] 
 
 # =================================================
-# ★ここに「Attention」の設計図を追加しました！
+# ★学習コードの「Attention」をそのまま移植
 # =================================================
 @tf.keras.utils.register_keras_serializable()
 class Attention(Layer):
@@ -25,19 +28,18 @@ class Attention(Layer):
     def build(self, input_shape):
         self.W = self.add_weight(name='attention_weight', 
                                  shape=(input_shape[-1], 1), 
-                                 initializer='normal', 
-                                 trainable=True)
+                                 initializer='normal', trainable=True)
         self.b = self.add_weight(name='attention_bias', 
                                  shape=(input_shape[1], 1), 
-                                 initializer='zeros', 
-                                 trainable=True)
+                                 initializer='zeros', trainable=True)
         super(Attention, self).build(input_shape)
 
     def call(self, x):
-        e = tf.keras.backend.tanh(tf.keras.backend.dot(x, self.W) + self.b)
-        a = tf.keras.backend.softmax(e, axis=1)
+        # x: (batch_size, time_steps, features)
+        e = K.tanh(K.dot(x, self.W) + self.b)
+        a = K.softmax(e, axis=1) # 時間軸に対して重みを計算
         output = x * a
-        return tf.keras.backend.sum(output, axis=1)
+        return K.sum(output, axis=1) # 重み付き和を返す
 
     def get_config(self):
         config = super(Attention, self).get_config()
@@ -47,16 +49,13 @@ class Attention(Layer):
 
 @st.cache_resource
 def load_model():
-    # ★ここも修正！「Attentionを使ってね」と教えています
     return tf.keras.models.load_model(MODEL_FILE_NAME, custom_objects={'Attention': Attention})
 
-# モデル読み込み処理
 try:
     model = load_model()
     st.success(f"モデル読み込み成功！: {MODEL_FILE_NAME}")
 except Exception as e:
     st.error(f"モデル読み込みエラー: {e}")
-    st.error("※学習コードのAttentionと形が違う可能性があります。その場合は学習コードを見せてください！")
     model = None
 
 # MediaPipe設定
@@ -85,17 +84,29 @@ class VideoProcessor(VideoTransformerBase):
 
         # 2. 座標データ変換
         if model is not None:
+            # ★ここが修正ポイント！学習コード「FEATURES = 225」に合わせます
+            # 順番重要: Pose(33) -> Left Hand(21) -> Right Hand(21)
+
+            # (1) Pose (33点 * 3 = 99次元)
+            if results.pose_landmarks:
+                pose = np.array([[res.x, res.y, res.z] for res in results.pose_landmarks.landmark]).flatten()
+            else:
+                pose = np.zeros(33*3)
+
+            # (2) Left Hand (21点 * 3 = 63次元)
             if results.left_hand_landmarks:
                 lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark]).flatten()
             else:
                 lh = np.zeros(21*3)
             
+            # (3) Right Hand (21点 * 3 = 63次元)
             if results.right_hand_landmarks:
                 rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark]).flatten()
             else:
                 rh = np.zeros(21*3)
 
-            keypoints = np.concatenate([lh, rh])
+            # 全部つなげる (99 + 63 + 63 = 225次元！)
+            keypoints = np.concatenate([pose, lh, rh])
             self.sequence.append(keypoints)
 
             # 3. 予測実行
@@ -106,12 +117,14 @@ class VideoProcessor(VideoTransformerBase):
                     predicted_index = np.argmax(prediction)
                     confidence = prediction[0][predicted_index]
 
-                    if confidence > 0.7:
+                    if confidence > 0.7: # 閾値
                         if predicted_index < len(CLASS_NAMES):
                             self.prediction_text = f"{CLASS_NAMES[predicted_index]} ({confidence*100:.1f}%)"
                         else:
                             self.prediction_text = f"Class {predicted_index}"
                 except Exception as e:
+                    # 次元が合わない等のエラーはここで無視されるので、今回はprintで出すようにしても良いかも
+                    print(f"Prediction Error: {e}")
                     pass
 
         # 4. 描画
