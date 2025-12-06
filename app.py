@@ -14,7 +14,7 @@ import av
 # =================================================
 MODEL_FILE_NAME = "best_sign_model.keras"
 # クラス名は4つ（あなたの環境に合わせて！）
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "動け！！！"] 
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "Label 4"] 
 
 # =================================================
 # Attention層
