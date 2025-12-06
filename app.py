@@ -13,7 +13,6 @@ import av
 # ⚙️ 設定エリア
 # =================================================
 MODEL_FILE_NAME = "best_sign_model.keras"
-# ★修正：Label 4 に変更（文字化け対策）
 CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "Label 4"] 
 
 # =================================================
@@ -61,9 +60,10 @@ mp_drawing = mp.solutions.drawing_utils
 # 🎛️ UIサイドバー
 # =================================================
 st.sidebar.title("System Control")
-DEBUG_MODE = st.sidebar.checkbox("Show Skeleton (骨格表示)", value=True)
+# ★修正：初期値を False（OFF）にしました
+DEBUG_MODE = st.sidebar.checkbox("デバッグモード（詳細表示）", value=False)
 st.sidebar.write("---")
-st.sidebar.info("グラフを見るために近づきすぎると認識できません。'BACK!'と出たら下がってください。")
+st.sidebar.info("チェックを入れると、骨格や詳細データが表示されます。")
 
 # ------------------------------------------------
 # 映像処理クラス
@@ -80,50 +80,36 @@ class VideoProcessor(VideoTransformerBase):
         self.result_conf = 0.0
         self.status_text = "Init..."
         self.debug = DEBUG_MODE
-        self.warning_msg = "" # 警告メッセージ用
+        self.warning_msg = "" 
 
     def transform(self, frame):
         # 1. 画像取得
         img = frame.to_ndarray(format="bgr24")
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.holistic.process(img_rgb)
-
-        # ---------------------------------------------------------
-        # ★ 線を描く（デバッグモード時）
-        # ---------------------------------------------------------
-        if self.debug:
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
-            mp_drawing.draw_landmarks(img, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-            mp_drawing.draw_landmarks(img, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-
-        # ---------------------------------------------------------
-        # 2. ダッシュボード合体
-        # ---------------------------------------------------------
+        
         h, w, _ = img.shape
-        panel_w = 320
-        canvas = np.zeros((h, w + panel_w, 3), dtype=np.uint8)
-        canvas[:h, :w] = img
+        font = cv2.FONT_HERSHEY_SIMPLEX
 
-        # 3. データ抽出
+        # ---------------------------------------------------------
+        # 2. 計算処理（ここはモードに関係なく裏で実行）
+        # ---------------------------------------------------------
         has_pose = results.pose_landmarks is not None
         has_lh = results.left_hand_landmarks is not None
         has_rh = results.right_hand_landmarks is not None
         
         self.status_text = f"P[{'O' if has_pose else 'X'}] L[{'O' if has_lh else 'X'}] R[{'O' if has_rh else 'X'}]"
 
-        # ★ 張り付き防止対策：ポーズが見えていない時は計算しない！
+        # 張り付き防止対策
         if not has_pose:
-            self.warning_msg = "STEP BACK!" # 警告を出す
-            # 確率バーを徐々に下げる（リセット演出）
+            self.warning_msg = "STEP BACK!"
             self.probs = self.probs * 0.9 
             if self.result_conf > 0: self.result_conf *= 0.9
         else:
-            self.warning_msg = "" # 警告なし
+            self.warning_msg = ""
             
-            # --- ここからいつもの計算 ---
             if model is not None:
                 pose = np.array([[res.x, res.y, res.z] for res in results.pose_landmarks.landmark])
-                
                 if has_lh:
                     lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark])
                 else:
@@ -166,62 +152,81 @@ class VideoProcessor(VideoTransformerBase):
                     except Exception:
                         pass
 
-        # 4. ダッシュボード描画
-        x_start = w + 10
-        y_cursor = 40
-        font = cv2.FONT_HERSHEY_SIMPLEX
+        # ---------------------------------------------------------
+        # 3. 描画分岐（ここが変わった！）
+        # ---------------------------------------------------------
         
-        cv2.putText(canvas, "AI Analysis", (x_start, y_cursor), font, 0.8, (255, 255, 255), 2)
-        y_cursor += 40
-        
-        p_color = (0, 255, 0) if has_pose else (0, 0, 255)
-        cv2.putText(canvas, self.status_text, (x_start, y_cursor), font, 0.5, p_color, 1)
-        y_cursor += 40
-        
-        cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
-        y_cursor += 30
+        # 【A】デバッグモードの場合（コックピット表示）
+        if self.debug:
+            # 骨格を描画
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
+            mp_drawing.draw_landmarks(img, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
+            mp_drawing.draw_landmarks(img, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
 
-        # 結果表示
-        cv2.putText(canvas, "Result:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
-        y_cursor += 35
-        cv2.putText(canvas, self.result_label, (x_start, y_cursor), font, 1.0, (0, 255, 255), 2)
-        y_cursor += 30
-        cv2.putText(canvas, f"Conf: {self.result_conf*100:.1f}%", (x_start, y_cursor), font, 0.6, (0, 255, 255), 1)
-        
-        y_cursor += 40
-        cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
-        y_cursor += 30
+            # ダッシュボード作成
+            panel_w = 320
+            canvas = np.zeros((h, w + panel_w, 3), dtype=np.uint8)
+            canvas[:h, :w] = img
 
-        # グラフ描画
-        cv2.putText(canvas, "Probabilities:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
-        y_cursor += 20
-
-        bar_max_width = 180
-        for i, prob in enumerate(self.probs):
-            class_name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
-            y_cursor += 20
-            cv2.putText(canvas, f"{class_name}", (x_start, y_cursor), font, 0.5, (255, 255, 255), 1)
-            y_bar = y_cursor + 5
-            cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_max_width, y_bar + 10), (50, 50, 50), -1)
+            # ダッシュボード情報描画
+            x_start = w + 10
+            y_cursor = 40
             
-            bar_w = int(prob * bar_max_width)
-            bar_color = (0, 0, 255) if prob == max(self.probs) else (0, 255, 0)
-            if bar_w > 0:
-                cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_w, y_bar + 10), bar_color, -1)
+            cv2.putText(canvas, "AI Analysis", (x_start, y_cursor), font, 0.8, (255, 255, 255), 2)
+            y_cursor += 40
             
-            cv2.putText(canvas, f"{prob*100:.0f}%", (x_start + bar_max_width + 10, y_bar + 8), font, 0.4, (200, 200, 200), 1)
+            p_color = (0, 255, 0) if has_pose else (0, 0, 255)
+            cv2.putText(canvas, self.status_text, (x_start, y_cursor), font, 0.5, p_color, 1)
+            y_cursor += 40
+            cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
+            y_cursor += 30
+
+            cv2.putText(canvas, "Result:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
+            y_cursor += 35
+            cv2.putText(canvas, self.result_label, (x_start, y_cursor), font, 1.0, (0, 255, 255), 2)
+            y_cursor += 30
+            cv2.putText(canvas, f"Conf: {self.result_conf*100:.1f}%", (x_start, y_cursor), font, 0.6, (0, 255, 255), 1)
+            
+            y_cursor += 40
+            cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
+            y_cursor += 30
+
+            cv2.putText(canvas, "Probabilities:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
             y_cursor += 20
+            bar_max_width = 180
+            for i, prob in enumerate(self.probs):
+                class_name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
+                y_cursor += 20
+                cv2.putText(canvas, f"{class_name}", (x_start, y_cursor), font, 0.5, (255, 255, 255), 1)
+                y_bar = y_cursor + 5
+                cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_max_width, y_bar + 10), (50, 50, 50), -1)
+                bar_w = int(prob * bar_max_width)
+                bar_color = (0, 0, 255) if prob == max(self.probs) else (0, 255, 0)
+                if bar_w > 0:
+                    cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_w, y_bar + 10), bar_color, -1)
+                cv2.putText(canvas, f"{prob*100:.0f}%", (x_start + bar_max_width + 10, y_bar + 8), font, 0.4, (200, 200, 200), 1)
+                y_cursor += 20
 
-        # ★ 警告表示（映像の真ん中にデカデカと出す）
-        if self.warning_msg:
-            # 赤い枠と文字
-            cv2.rectangle(canvas, (50, h//2 - 40), (w-50, h//2 + 40), (0, 0, 255), 2)
-            cv2.rectangle(canvas, (52, h//2 - 38), (w-52, h//2 + 38), (0, 0, 0), -1)
-            text_size = cv2.getTextSize(self.warning_msg, font, 2.0, 3)[0]
-            text_x = (w - text_size[0]) // 2
-            cv2.putText(canvas, self.warning_msg, (text_x, h//2 + 10), font, 2.0, (0, 0, 255), 3)
+            # 警告表示（中央）
+            if self.warning_msg:
+                cv2.rectangle(canvas, (50, h//2 - 40), (w-50, h//2 + 40), (0, 0, 255), 2)
+                cv2.rectangle(canvas, (52, h//2 - 38), (w-52, h//2 + 38), (0, 0, 0), -1)
+                text_size = cv2.getTextSize(self.warning_msg, font, 2.0, 3)[0]
+                text_x = (w - text_size[0]) // 2
+                cv2.putText(canvas, self.warning_msg, (text_x, h//2 + 10), font, 2.0, (0, 0, 255), 3)
 
-        return canvas
+            return canvas
+
+        # 【B】通常モードの場合（シンプル表示）
+        else:
+            # 左上に結果を表示
+            cv2.putText(img, f"Result: {self.result_label}", (10, 50), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # 警告表示（シンプルに）
+            if self.warning_msg:
+                 cv2.putText(img, self.warning_msg, (50, h//2), font, 2.0, (0, 0, 255), 3)
+
+            return img
 
 # ------------------------------------------------
 # アプリ画面構成
